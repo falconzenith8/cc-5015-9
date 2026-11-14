@@ -1,0 +1,13 @@
+[package]
+name = "plant-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Headless CLI for procedural plant generation, validation and export"
+
+[[bin]]
+name = "plant"
+path = "src/main.rs"
+
+[dependencies]
+plant-core = { path = "../plant-core" }

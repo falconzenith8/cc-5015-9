@@ -1,0 +1,15 @@
+[package]
+name = "plant-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Realtime parameter editor for the procedural plant generator"
+
+[[bin]]
+name = "plant-gui"
+path = "src/main.rs"
+
+[dependencies]
+plant-core = { path = "../plant-core" }
+eframe = { version = "0.29", default-features = false, features = ["glow", "default_fonts"] }
+egui = "0.29"

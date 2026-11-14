@@ -1,0 +1,10 @@
+[package]
+name = "plant-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Deterministic procedural virtual plant generator (no global RNG, hierarchical transforms, real geometry)"
+
+[lib]
+name = "plant_core"
+path = "src/lib.rs"

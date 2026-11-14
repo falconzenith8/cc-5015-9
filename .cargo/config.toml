@@ -1,0 +1,4 @@
+# The environment's /usr/local/bin/cc is a sandbox wrapper that rejects linker
+# argument sets; point rustc at the real system gcc instead.
+[target.aarch64-unknown-linux-gnu]
+linker = "/usr/bin/gcc"
