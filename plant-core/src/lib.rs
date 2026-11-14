@@ -34,6 +34,7 @@ pub mod math;
 pub mod model;
 pub mod params;
 pub mod rng;
+pub mod rules;
 pub mod validation;
 
 pub use builder::{build_leaves, build_meshes, build_plant, merge_mesh_stats, BuildStats, MeshStats};

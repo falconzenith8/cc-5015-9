@@ -1,0 +1,21 @@
+plant-rules/v1
+# Centimetre-era rule file: the unit header changes the implicit default for
+# every bare length below. Angles stay implicitly in radians.
+unit cm
+seed 777
+trunk length 320
+trunk radius 22
+branch count 4
+branch angle 0.5
+branch length-ratio 0.68
+branch radius-ratio 0.58
+branch taper 0.5
+branch bend 0.12
+leaf length 24
+leaf width 10
+limit depth 4
+limit nodes 900
+material bark trunk
+material bark L1
+material twig twigs
+attach parent 0.4

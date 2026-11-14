@@ -1,0 +1,13 @@
+plant-rules/v1
+# Rule file containing directives the v2 grammar has no equivalent for.
+# The converter must surface these as pending instead of guessing defaults.
+seed 4242
+trunk length 6
+branch count 2
+branch angle 0.8
+limit depth 3
+material bark trunk
+season autumn
+wind-field curl 0.3
+phyllotaxy spiral golden
+attach shoot 0.6

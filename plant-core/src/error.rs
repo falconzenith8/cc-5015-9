@@ -7,6 +7,9 @@ pub enum PlantError {
     BudgetExhausted { budget: &'static str, limit: usize },
     InvalidPlant(String),
     Json(String),
+    /// A rule document could not be parsed or failed a rule-level semantic
+    /// check (unknown directive, missing explicit unit, dangling reference).
+    Rule(String),
 }
 
 impl std::fmt::Display for PlantError {
@@ -18,6 +21,7 @@ impl std::fmt::Display for PlantError {
             }
             PlantError::InvalidPlant(m) => write!(f, "geometric validation failed: {m}"),
             PlantError::Json(m) => write!(f, "json error: {m}"),
+            PlantError::Rule(m) => write!(f, "rule error: {m}"),
         }
     }
 }

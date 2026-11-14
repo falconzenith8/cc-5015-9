@@ -1,15 +1,27 @@
-//! Realtime parameter editor for the procedural plant generator.
+//! Realtime rule/parameter editor for the procedural plant generator.
 //!
-//! The left panel edits the same [`PlantParams`] the CLI uses — including seed,
-//! branch count, angle, length ratio and the resource budgets — and every
-//! change rebuilds the plant through the deterministic core. The right panel
-//! renders the actual generated splines and leaf instances with an orbit
-//! camera; it never displays a pre-made model.
+//! The egui layer is intentionally thin: every state change and every rebuild
+//! goes through [`studio::PlantStudio`], which drives the deterministic core.
+//! The left panel edits either the classic [`PlantParams`] sliders or a rule
+//! document (legacy v1 / explicit v2, including one-click migration); the right
+//! panel renders the actual generated splines and leaf instances with an orbit
+//! camera. It never displays a pre-made model.
+//!
+//! # Launching the interface
+//!
+//! ```bash
+//! cargo run --release -p plant-gui
+//! ```
+//!
+//! A native display (Wayland/X11) is required. On a headless host the binary
+//! exits with a clear window-system error; the headless rule workflow is
+//! covered by the `studio` module tests and the `plant` CLI.
+
+mod studio;
 
 use eframe::egui::{self, Color32, Pos2, Slider, Ui, Vec2};
-use plant_core::{
-    build_leaves, build_meshes, build_plant, validate_plant, LeafParams, Limits, PlantParams,
-};
+use plant_core::{LeafParams, Limits, PlantParams};
+use studio::PlantStudio;
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
@@ -24,74 +36,31 @@ fn main() -> eframe::Result<()> {
 }
 
 struct PlantApp {
-    params: PlantParams,
-    plant: Option<plant_core::Plant>,
-    status: String,
+    studio: PlantStudio,
+    rebuild_requested: bool,
     cam_yaw: f32,
     cam_pitch: f32,
     cam_dist: f32,
-    auto_rebuild: bool,
-    rebuild_requested: bool,
+    rule_status: String,
 }
 
 impl Default for PlantApp {
     fn default() -> Self {
-        let mut app = Self {
-            params: PlantParams::default(),
-            plant: None,
-            status: "not built yet".into(),
+        Self {
+            studio: PlantStudio::new(),
+            rebuild_requested: false,
             cam_yaw: 0.6,
             cam_pitch: 0.35,
             cam_dist: 14.0,
-            auto_rebuild: true,
-            rebuild_requested: true,
-        };
-        app.rebuild();
-        app
+            rule_status: String::new(),
+        }
     }
 }
 
 impl PlantApp {
-    fn rebuild(&mut self) {
-        let params = self.params.clone();
-        match build_plant(params) {
-            Ok((mut plant, stats)) => {
-                let (meshes, tube_stats) = match build_meshes(&plant) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        self.status = format!("mesh error: {e}");
-                        return;
-                    }
-                };
-                let (leaves, leaf_stats) = build_leaves(&plant);
-                plant.leaves = leaves;
-                match validate_plant(&plant) {
-                    Ok(()) => {
-                        self.status = format!(
-                            "nodes={} depth={} leaves={} v={} t={} prune(d={},b={},n={})",
-                            plant.node_count(),
-                            stats.depth_reached,
-                            plant.leaves.len(),
-                            tube_stats.vertices + leaf_stats.vertices,
-                            tube_stats.triangles + leaf_stats.triangles,
-                            stats.pruned_degenerate,
-                            stats.pruned_depth,
-                            stats.pruned_node_budget
-                        );
-                        self.plant = Some(plant);
-                        drop(meshes);
-                    }
-                    Err(e) => self.status = format!("validation failed: {e}"),
-                }
-            }
-            Err(e) => self.status = format!("build error: {e}"),
-        }
-        self.rebuild_requested = false;
-    }
-
     fn request_rebuild(&mut self) {
-        if self.auto_rebuild {
-            self.rebuild();
+        if self.studio.auto_rebuild {
+            self.studio.rebuild_params();
         } else {
             self.rebuild_requested = true;
         }
@@ -100,30 +69,40 @@ impl PlantApp {
 
 impl eframe::App for PlantApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        egui::SidePanel::left("controls").default_width(360.0).show(ctx, |ui| {
+        egui::SidePanel::left("controls").default_width(380.0).show(ctx, |ui| {
             ui.heading("Procedural Plant");
             ui.separator();
-            let before = self.params.clone();
-            parameter_panel(ui, &mut self.params);
+            let before = self.studio.params.clone();
+            parameter_panel(ui, &mut self.studio.params);
             ui.separator();
-            ui.checkbox(&mut self.auto_rebuild, "Rebuild on change");
-            if !self.auto_rebuild && ui.button("Rebuild now").clicked() {
+            rule_panel(ui, self);
+            ui.separator();
+            ui.checkbox(&mut self.studio.auto_rebuild, "Rebuild on change");
+            if !self.studio.auto_rebuild && ui.button("Rebuild now").clicked() {
                 self.rebuild_requested = true;
             }
             if ui.button("Reset to defaults").clicked() {
-                self.params = PlantParams::default();
+                self.studio.reset_defaults();
                 self.rebuild_requested = true;
             }
-            if self.params != before {
+            if self.studio.params != before {
+                // Editing a slider detaches any applied rule document: the
+                // params are now the source of truth again.
+                self.studio.loaded = None;
+                self.studio.evidence = None;
                 self.request_rebuild();
             }
             if self.rebuild_requested {
-                self.rebuild();
+                self.studio.rebuild_params();
+                self.rebuild_requested = false;
             }
             ui.separator();
-            ui.label(egui::RichText::new(&self.status).small().color(Color32::LIGHT_GREEN));
+            ui.label(egui::RichText::new(&self.studio.status).small().color(Color32::LIGHT_GREEN));
+            if !self.rule_status.is_empty() {
+                ui.label(egui::RichText::new(&self.rule_status).small().color(Color32::LIGHT_BLUE));
+            }
             ui.label(
-                egui::RichText::new(format!("seed = {:#018x}", self.params.seed)).small(),
+                egui::RichText::new(format!("seed = {:#018x}", self.studio.params.seed)).small(),
             );
         });
 
@@ -132,12 +111,121 @@ impl eframe::App for PlantApp {
             let painter = ui.painter();
             let rect = ui.available_rect_before_wrap();
             painter.rect_filled(rect, 0.0, Color32::from_rgb(18, 22, 20));
-            if let Some(plant) = &self.plant {
+            if let Some(plant) = &self.studio.plant {
                 draw_plant(painter, rect, plant, self);
             }
         });
         ctx.request_repaint_after(std::time::Duration::from_millis(60));
     }
+}
+
+/// Rule document editor: load a file, apply v1/v2 text, or migrate v1 -> v2.
+/// Every action delegates to the studio engine; failures come back as text.
+fn rule_panel(ui: &mut Ui, app: &mut PlantApp) {
+    ui.collapsing("Rule document (v1 legacy / v2 explicit)", |ui| {
+        let available = ui.available_width();
+        ui.add(
+            egui::TextEdit::multiline(&mut app.studio.rule_text)
+                .desired_width(available)
+                .desired_rows(8)
+                .code_editor(),
+        );
+        ui.horizontal(|ui| {
+            if ui.button("Apply rule & rebuild").clicked() {
+                match app.studio.apply_rule_text(&app.studio.rule_text.clone()) {
+                    Ok(()) => {
+                        let loaded = app.studio.loaded.as_ref().expect("rule just applied");
+                        app.rule_status = format!(
+                            "applied [{}] with {} material binding(s); rebuilt through the core path",
+                            loaded.format,
+                            loaded.binding_count()
+                        );
+                    }
+                    Err(e) => app.rule_status = format!("rule error: {e}"),
+                }
+            }
+            if ui.button("Migrate v1 -> v2").clicked() {
+                match app.studio.migrate_editor_text() {
+                    Ok(pending) => {
+                        let explicit = app
+                            .studio
+                            .loaded
+                            .as_ref()
+                            .is_some_and(|l| l.is_explicit_v2());
+                        app.rule_status = if pending == 0 {
+                            format!(
+                                "migrated: explicit v2 applied ({explicit}), no pending rules"
+                            )
+                        } else {
+                            format!("migrated with {pending} pending rule(s); see comments")
+                        };
+                    }
+                    Err(e) => app.rule_status = format!("migration error: {e}"),
+                }
+            }
+        });
+        if ui.button("Load rule file…").clicked() {
+            // egui has no native file dialog without extra dependencies; the
+            // path is entered in the field below and loaded on demand.
+            app.rule_status = "type a path into the box and press Load".into();
+        }
+        ui.horizontal(|ui| {
+            let mut path = String::new();
+            ui.text_edit_singleline(&mut path);
+            if ui.button("Load").clicked() && !path.is_empty() {
+                match std::fs::read_to_string(&path) {
+                    Ok(text) => {
+                        app.studio.rule_text = text;
+                        match app.studio.apply_rule_text(&app.studio.rule_text.clone()) {
+                            Ok(()) => app.rule_status = format!("loaded {path} and rebuilt"),
+                            Err(e) => app.rule_status = format!("rule error in {path}: {e}"),
+                        }
+                    }
+                    Err(e) => app.rule_status = format!("load error: {e}"),
+                }
+                if let Some(loaded) = app.studio.loaded.as_ref() {
+                    app.rule_status = format!(
+                        "{} ({} source bytes)",
+                        app.rule_status,
+                        loaded.source_text().len()
+                    );
+                }
+            }
+        });
+
+        // Surface the rule-level geometry evidence the engine computed.
+        if let Some(evidence) = &app.studio.evidence {
+            ui.separator();
+            ui.label(egui::RichText::new("Material / layer evidence").strong());
+            for b in &evidence.bindings {
+                let color = if b.matched {
+                    Color32::LIGHT_GREEN
+                } else {
+                    Color32::from_rgb(230, 150, 60)
+                };
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{} on {}: {} matched node(s)",
+                        b.material,
+                        b.layer.render(),
+                        b.matched_nodes.len()
+                    ))
+                    .small()
+                    .color(color),
+                );
+            }
+            if !evidence.uncovered_woody_nodes.is_empty() {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "uncovered woody nodes: {}",
+                        evidence.uncovered_woody_nodes.len()
+                    ))
+                    .small()
+                    .color(Color32::from_rgb(230, 150, 60)),
+                );
+            }
+        }
+    });
 }
 
 fn parameter_panel(ui: &mut Ui, p: &mut PlantParams) {
@@ -208,12 +296,7 @@ fn project(center: Pos2, scale: f32, yaw: f32, pitch: f32, dist: f32, p: plant_c
     )
 }
 
-fn draw_plant(
-    painter: &egui::Painter,
-    rect: egui::Rect,
-    plant: &plant_core::Plant,
-    app: &PlantApp,
-) {
+fn draw_plant(painter: &egui::Painter, rect: egui::Rect, plant: &plant_core::Plant, app: &PlantApp) {
     let center = rect.center() + Vec2::new(0.0, rect.height() * 0.32);
     let scale = (rect.height() / (app.cam_dist * 1.2)).max(8.0);
 
@@ -255,5 +338,76 @@ fn draw_plant(
         let p2 = project(center, scale, app.cam_yaw, app.cam_pitch, app.cam_dist, side);
         painter.line_segment([p0, p1], (1.0, leaf_color));
         painter.line_segment([p0, p2], (1.0, leaf_color));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::studio::PlantStudio;
+
+    const LEGACY_RULE: &str = "plant-rules/v1\n\
+seed 555\n\
+trunk length 4\n\
+branch count 3\n\
+branch angle 0.7\n\
+limit depth 4\n\
+material bark trunk\n\
+material wood twigs\n\
+material foliage leaves\n";
+
+    /// The viewport-free engine must drive a full rule -> rebuild cycle,
+    /// including migration, so the virtual plant is not "done" as scripts only.
+    #[test]
+    fn studio_applies_legacy_rule_and_rebuilds_plant() {
+        let mut studio = PlantStudio::new();
+        studio.rule_text = LEGACY_RULE.to_string();
+        studio.apply_rule_text(LEGACY_RULE).expect("legacy rule applies");
+        let plant = studio.plant.as_ref().expect("plant rebuilt from rule");
+        assert!(plant.node_count() > 1);
+        assert_eq!(studio.params.seed, 555);
+        let evidence = studio.evidence.as_ref().expect("rule evidence present");
+        assert!(evidence.bindings.iter().any(|b| b.material == "bark" && b.matched));
+        // Leaf binding resolves against real leaf instances.
+        let foliage = evidence
+            .bindings
+            .iter()
+            .find(|b| b.material == "foliage")
+            .unwrap();
+        assert!(foliage.matched);
+    }
+
+    #[test]
+    fn studio_migrates_legacy_to_explicit_and_rebuilds() {
+        let mut studio = PlantStudio::new();
+        studio.rule_text = LEGACY_RULE.to_string();
+        let pending = studio.migrate_editor_text().expect("migration succeeds");
+        assert_eq!(pending, 0);
+        assert!(studio.rule_text.contains("plant-rules/v2"));
+        assert!(studio.rule_text.contains("migration-version: rule-migration/v1-to-v2"));
+        // The migrated document is now the loaded source of truth.
+        let loaded = studio.loaded.as_ref().expect("loaded rule present");
+        assert_eq!(loaded.format, "plant-rules/v2");
+        assert!(studio.plant.is_some());
+    }
+
+    #[test]
+    fn studio_reports_rule_errors_without_dropping_the_plant() {
+        let mut studio = PlantStudio::new();
+        let before = studio.plant.as_ref().map(|p| p.node_count());
+        let bad = "plant-rules/v2\nseed value=1\ntrunk length=4 radius=0.2\n";
+        let err = studio.apply_rule_text(bad).unwrap_err();
+        assert!(err.contains("missing an explicit unit"));
+        // Previous plant survives the failed apply.
+        assert_eq!(studio.plant.as_ref().map(|p| p.node_count()), before);
+    }
+
+    #[test]
+    fn studio_pending_rules_are_counted_not_hidden() {
+        let mut studio = PlantStudio::new();
+        studio.rule_text = format!("{LEGACY_RULE}season winter\n");
+        let pending = studio.migrate_editor_text().expect("migration still completes");
+        assert_eq!(pending, 1);
+        assert!(studio.rule_text.contains("PENDING"));
+        assert!(studio.rule_text.contains("season winter"));
     }
 }

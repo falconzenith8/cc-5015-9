@@ -1,0 +1,30 @@
+plant-rules/v1
+# Legacy shrub rule set. Bare numbers use implicit default units:
+# lengths in metres (no unit header), angles in radians.
+seed 20260114
+trunk length 4.5
+trunk radius 0.28
+branch count 3
+branch angle 0.65
+branch jitter 0.12
+branch length-ratio 0.72
+branch length-jitter 0.1
+branch radius-ratio 0.6
+branch taper 0.55
+branch bend 0.08
+branch segments 8
+branch sides 7
+leaf on
+leaf per-tip 4
+leaf length 0.3
+leaf width 0.15
+leaf lift 0.4
+limit depth 5
+limit nodes 1500
+limit leaves 6000
+limit vertices 120000
+limit triangles 60000
+material bark trunk
+material wood twigs
+material foliage leaves
+attach trunk 0.55

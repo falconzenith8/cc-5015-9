@@ -4,6 +4,7 @@
 plant-out/
 stress-out/
 rebuilt-out/
+rule-out/
 
 # Local macOS metadata and documented reproducible CLI output
 .DS_Store

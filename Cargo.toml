@@ -3,9 +3,17 @@ resolver = "2"
 members = ["plant-core", "plant-cli", "plant-gui"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
+
+# Pinned rule-schema contract delivered by the v1 -> v2 migration. The rule
+# parser and converter both reference this so the migration version is explicit
+# in the build, not only in generated file headers.
+[workspace.metadata.rule_migration]
+schema_version = "rule-migration/v1-to-v2"
+legacy_format = "plant-rules/v1"
+explicit_format = "plant-rules/v2"
 
 [profile.release]
 opt-level = 3

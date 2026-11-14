@@ -9,9 +9,74 @@ geometry, never a pre-made model or particle billboard.
 
 | Crate | Role | Third-party deps |
 | --- | --- | --- |
-| `plant-core` | Deterministic generation, math, geometry, validation, export | none |
-| `plant-cli` | Headless generation / validation / stress / export | `plant-core` |
-| `plant-gui` | Realtime `egui`/`eframe` parameter editor with orbit viewport | `eframe`, `egui` |
+| `plant-core` | Deterministic generation, math, geometry, validation, export, rule DSL + migration | none |
+| `plant-cli` | Headless generation / validation / stress / export / rule migration | `plant-core` |
+| `plant-gui` | Realtime `egui`/`eframe` rule & parameter editor with orbit viewport | `eframe`, `egui` |
+
+## Rule DSL and the v1 -> v2 migration
+
+Plants can be described by text rule documents in two syntaxes. Both compile
+to the same internal `RulePlan` and run through the **single** deterministic
+builder — there is no second generator.
+
+### Legacy `plant-rules/v1` — implicit
+
+```text
+plant-rules/v1
+unit cm                 # optional; absent => bare lengths mean metres
+seed 777
+trunk length 320        # bare number => default length unit (cm here)
+branch angle 0.5        # bare number => default angle unit (radians)
+material bark trunk     # positional branch reference / layer word
+attach parent 0.4
+```
+
+### Explicit `plant-rules/v2` — no implicit defaults
+
+```text
+plant-rules/v2
+seed value=777
+trunk length=320cm radius=22cm
+branch count=4 angle=0.5rad ratio.length=0.68 ...
+material name=bark layer=branch:trunk
+attach target=branch:parent at=0.4
+```
+
+* Every dimensional value carries a unit suffix: lengths `m`/`cm`/`mm`,
+  angles `rad`/`deg`. A bare number where a unit belongs is a **hard parse
+  error**, never a silently applied default. Dimensionless ratios stay plain
+  fractions under `ratio.*` / `taper` / `bend` / `lift`.
+* Branch references and material layers are qualified selectors:
+  `branch:trunk`, `branch:<depth>`, `branch:<a>..`, `branch:<a>..<b>`,
+  `leaves`; attach targets use `branch:trunk` / `branch:parent`.
+
+### The converter's contract
+
+`rule-migrate` converts v1 -> v2 deterministically and never hides a problem
+behind a default:
+
+* the 64-bit **seed**, the **branching levels** (count, depth, ratios) and
+  every **material binding** are preserved;
+* each implicit default the legacy parser used is written out explicitly and
+  listed in the report and in the converted file's header comments;
+* a stated value equal to an engine default is still treated as *stated*
+  (presence is tracked explicitly, so explicit input is never mislabeled);
+* rules with no v2 equivalent are **pending**: kept verbatim as comments and
+  returned in the report. `--strict` makes any pending rule fail the command;
+* the original project file is copied to `<file>.v1.bak` before writing — a
+  rollback copy always exists.
+
+Equivalence is decided on **real generated geometry**, not on seed strings:
+`rule-verify` builds the plant through both rule paths and compares node
+counts, depths, spline samples, world transforms, radii and leaf
+anchors/normals field-by-field. A same-seed/different-rules pair is asserted
+to diverge, so an identical seed string is never accepted as cross-algorithm
+equality. Material semantics are checked against actual layer identity (node
+depth) and measured world-space extents (`rule-bindings.json`).
+
+Every converted file and report carries the pinned migration marker
+`migration-version: rule-migration/v1-to-v2` (also in `Cargo.toml`
+`[workspace.metadata.rule_migration]` and the `MIGRATION_VERSION` constant).
 
 ## Design guarantees
 
@@ -80,6 +145,9 @@ editable.
   leaf instance, plus the prune log. Re-import returns an equal `Plant`.
 * `plant.obj` + `plant.obj.manifest.json` — baked flattened geometry whose
   `g branch_<id>` / `g leaf_<n>` groups map back to node ids via the sidecar.
+* `rule-bindings.json` — only for `rule-generate`: the rule's material
+  bindings plus geometry evidence (matched node/leaf ids and world-space
+  bounds), making layer identity and geometric extent reviewable per build.
 
 ## Usage
 
@@ -101,6 +169,13 @@ cargo build --release
 # Required edge-case suite: fixed seed, zero branches, sharp angle,
 # many small leaves, tiny budget — prints budget reports and writes artifacts
 ./target/release/plant stress --out-dir stress
+
+# Rule workflow (v1 legacy -> v2 explicit). The first command writes a
+# <file>.v1.bak rollback copy plus a *.migration.json report.
+./target/release/plant rule-migrate shrub.legacy.rules \
+    --out shrub.v2.rules --report shrub.migration.json [--strict]
+./target/release/plant rule-verify shrub.legacy.rules            # geometry proof
+./target/release/plant rule-generate shrub.v2.rules --out-dir out # build from rules
 ```
 
 ### GUI
@@ -109,16 +184,22 @@ cargo build --release
 cargo run --release -p plant-gui
 ```
 
-Left panel: seed, branch count, angle, jitter, ratios, bend, taper, leaf
-parameters and all resource budgets, with live rebuild (or manual via the
-"Rebuild on change" toggle). Right panel: orbit-drag / scroll-zoom viewport
-drawing the actual generated splines and leaf instances. A native display
-(Wayland/X11) is required; on a headless host the binary exits with a clear
-window-system error.
+The window opens with two surfaces. The left panel has the classic parameter
+sliders **and** a "Rule document" editor: paste or load a `plant-rules/v1` or
+`plant-rules/v2` file, press **Apply rule & rebuild** to drive the core
+through the rule path, or **Migrate v1 -> v2** to convert and immediately
+rebuild on the new implementation. Material/layer evidence (matched node ids
+and world-space extents) renders under the editor; any parse or migration
+failure is returned into the panel's status line and leaves the current plant
+intact. The right panel is the orbit-drag / scroll-zoom viewport drawing the
+actual generated splines and leaf instances. A native display (Wayland/X11)
+is required; on a headless host the binary exits with a clear window-system
+error. The viewport-free engine behind the panel is covered by `plant-gui`
+unit tests, so the rule workflow is verifiable without a display.
 
 ## Test matrix
 
-`cargo test` runs 26 tests, including the required scenarios:
+`cargo test` runs 52 tests, including the required scenarios:
 
 * **fixed seed** — two independent builds compare equal field-for-field;
   cross-process export is byte-identical.
@@ -130,6 +211,14 @@ window-system error.
   terminate with explicit prune records.
 * hierarchy/export round trips, OBJ group coverage, invalid-parameter
   rejection, and the no-occlusion-deletion guarantee.
+* **rule migration** (`tests/rule_migration.rs`, fixtures under
+  `tests/fixtures/`): implicit-unit resolution and the cm header, seed/level/
+  material preservation, unknown rules reported as pending rather than
+  defaulted, byte-identical geometry across both rule paths, a same-seed
+  cross-algorithm divergence case, layer identity + world-extent evidence,
+  attachment weld evidence, and explicit-syntax rejection of bare numbers.
+* **GUI engine** (`plant-gui`): headless rule apply, v1->v2 migration,
+  error feedback that preserves the current plant, and pending-rule counting.
 
 ## Determinism notes
 
